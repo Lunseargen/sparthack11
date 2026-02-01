@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Flask Backend Server for SparthHack11
-Handles file uploads, frame storage, and vision detection
+Handles file uploads and video stream frame storage
 """
 
 from flask import Flask, request, jsonify, send_file, send_from_directory
@@ -10,8 +10,6 @@ from pathlib import Path
 import os
 import json
 from datetime import datetime
-import subprocess
-import sys
 
 app = Flask(__name__)
 
@@ -202,62 +200,6 @@ def save_quiz_frame():
         
         return jsonify({"message": "Quiz frame saved"}), 200
         
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ==================== VISION DETECTION ====================
-
-@app.route('/api/detect', methods=['POST'])
-def detect():
-    """Perform character detection on the latest frame"""
-    try:
-        data = request.get_json()
-        frame_number = data.get('frameNumber', 0)
-        
-        # Call vision detector script
-        try:
-            result = subprocess.run(
-                [sys.executable, 'python/vision_detector.py', 'detect_latest'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode == 0:
-                detection_data = json.loads(result.stdout)
-                return jsonify(detection_data), 200
-            else:
-                return jsonify({"detection": "Detection error"}), 500
-                
-        except subprocess.TimeoutExpired:
-            return jsonify({"detection": "Detection timeout"}), 500
-        except FileNotFoundError:
-            return jsonify({"detection": "Vision detector not found"}), 404
-        
-    except Exception as e:
-        return jsonify({"detection": f"Error: {str(e)}"}), 500
-
-
-@app.route('/api/batch-detect', methods=['POST'])
-def batch_detect():
-    """Perform batch detection on all frames"""
-    try:
-        result = subprocess.run(
-            [sys.executable, 'python/vision_detector.py', 'batch'],
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if result.returncode == 0:
-            return jsonify({
-                "message": "Batch detection completed",
-                "detections_file": "detections.json"
-            }), 200
-        else:
-            return jsonify({"error": "Batch detection failed"}), 500
-            
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

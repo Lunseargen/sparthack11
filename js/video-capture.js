@@ -11,6 +11,7 @@ class VideoCaptureManager {
         this.status = document.getElementById('status');
         this.textbox1 = document.getElementById('textbox1');
         this.textbox2 = document.getElementById('textbox2');
+        this.textbox3 = document.getElementById('textbox3');
         
         this.mediaRecorder = null;
         this.recordedChunks = [];
@@ -22,8 +23,11 @@ class VideoCaptureManager {
 
         this.streamMonitor = null;
         this.lastFrameAt = 0;
+        this.logPoller = null;
+        this.backendBaseUrl = this.getBackendBaseUrl();
 
         this.initEventListeners();
+        this.startLogPolling();
     }
     
     initEventListeners() {
@@ -43,6 +47,68 @@ class VideoCaptureManager {
             e.preventDefault();
             this.playAudio();
         });
+    }
+
+    getBackendBaseUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const override = params.get('backend');
+        if (override) return override.replace(/\/$/, '');
+        const stored = window.localStorage.getItem('backendUrl');
+        if (stored) return stored.replace(/\/$/, '');
+        return 'http://localhost:5000';
+    }
+
+    startLogPolling() {
+        if (this.logPoller) return;
+        const poll = async () => {
+            try {
+                await this.refreshLogs();
+            } catch (err) {
+                // ignore poll errors
+            }
+        };
+        poll();
+        this.logPoller = setInterval(poll, 1000);
+    }
+
+    async refreshLogs() {
+        const [compacted, corrected, raw] = await Promise.all([
+            this.fetchJson(`${this.backendBaseUrl}/logs/compacted`),
+            this.fetchJson(`${this.backendBaseUrl}/logs/corrected`),
+            this.fetchJson(`${this.backendBaseUrl}/logs/raw`)
+        ]);
+
+        if (raw && this.textbox1) {
+            if (Array.isArray(raw)) {
+                this.textbox1.value = raw.map(item => item.label || item).filter(Boolean).join('');
+            } else if (typeof raw === 'object' && raw.labels) {
+                this.textbox1.value = raw.labels;
+            }
+        }
+
+        if (Array.isArray(compacted) && this.textbox2) {
+            const labels = compacted.map(item => item.label).filter(Boolean).join('');
+            this.textbox2.value = labels;
+        }
+
+        if (Array.isArray(corrected) && this.textbox3) {
+            const words = corrected.map(item => item.string).filter(Boolean).join(' ');
+            this.textbox3.value = words;
+        }
+    }
+
+    async fetchJson(url) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2000);
+        try {
+            const res = await fetch(url, { signal: controller.signal });
+            if (!res.ok) return null;
+            return await res.json();
+        } catch (err) {
+            return null;
+        } finally {
+            clearTimeout(timeout);
+        }
     }
     
     async startRecording() {
@@ -280,11 +346,31 @@ class VideoCaptureManager {
     
     async playAudio() {
         try {
-            // Try to play audio file from server
-            const audio = new Audio('audio/speech.mp3');
-            audio.play().catch(err => {
-                this.updateStatus('No audio file found or error playing audio: ' + err.message, 'error');
-                console.error('Audio playback error:', err);
+            const text = (this.textbox2 && this.textbox2.value.trim())
+                ? this.textbox2.value.trim()
+                : (this.textbox1 ? this.textbox1.value.trim() : '');
+
+            if (!text) {
+                this.updateStatus('No text available for speech.', 'error');
+                return;
+            }
+
+            const res = await fetch(`${this.backendBaseUrl}/tts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+
+            if (!res.ok) {
+                const errText = await res.text();
+                throw new Error(errText || 'TTS request failed');
+            }
+
+            const audioBlob = await res.blob();
+            const audioUrl = URL.createObjectURL(audioBlob);
+            const audio = new Audio(audioUrl);
+            audio.play().finally(() => {
+                audio.onended = () => URL.revokeObjectURL(audioUrl);
             });
         } catch (err) {
             this.updateStatus('Error: ' + err.message, 'error');

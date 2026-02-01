@@ -56,7 +56,7 @@
             margin-bottom: 30px;
         }
         
-        .video-section {
+        .video-box {
             background: white;
             border-radius: 10px;
             overflow: hidden;
@@ -201,19 +201,23 @@
         </div>
         
         <div class="main-content">
-            <div class="video-section">
+            <div class="video-box">
                 <video id="videoStream" autoplay playsinline></video>
             </div>
             
             <div class="textbox-section">
                 <h2>📝 Annotations</h2>
                 <div>
-                    <label class="textbox-label">Textbox 1:</label>
-                    <textarea id="textbox1" placeholder="Enter text for annotation 1..."></textarea>
+                    <label class="textbox-label">Raw Data:</label>
+                    <textarea id="textbox1" placeholder="Raw labels from detections.json..."></textarea>
                 </div>
                 <div>
-                    <label class="textbox-label">Textbox 2:</label>
-                    <textarea id="textbox2" placeholder="Enter text for annotation 2..."></textarea>
+                    <label class="textbox-label">Compacted Data:</label>
+                    <textarea id="textbox2" placeholder="Compacted labels from compactedLog.json..."></textarea>
+                </div>
+                <div>
+                    <label class="textbox-label">Processed:</label>
+                    <textarea id="textbox3" placeholder="Corrected words from CorrectedLog.json..."></textarea>
                 </div>
             </div>
         </div>

@@ -11,6 +11,10 @@ class FileManager {
         this.progressBar = document.getElementById('progressBar');
         this.progressFill = document.getElementById('progressFill');
         this.fileInfo = document.getElementById('fileInfo');
+        this.annotateBtn = document.getElementById('annotateBtn');
+        this.annotateStatus = document.getElementById('annotateStatus');
+        this.downloadAnnotatedBtn = document.getElementById('downloadAnnotatedBtn');
+        this.backendBaseUrl = this.getBackendBaseUrl();
         
         this.selectedFile = null;
         this.initEventListeners();
@@ -30,6 +34,23 @@ class FileManager {
         
         // Upload button
         this.uploadBtn.addEventListener('click', () => this.uploadFile());
+
+        if (this.annotateBtn) {
+            this.annotateBtn.addEventListener('click', () => this.annotateFrames());
+        }
+
+        if (this.downloadAnnotatedBtn) {
+            this.downloadAnnotatedBtn.addEventListener('click', () => this.downloadAnnotatedFrames());
+        }
+    }
+
+    getBackendBaseUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const override = params.get('backend');
+        if (override) return override.replace(/\/$/, '');
+        const stored = window.localStorage.getItem('backendUrl');
+        if (stored) return stored.replace(/\/$/, '');
+        return 'http://localhost:5000';
     }
     
     handleFileSelect(event) {
@@ -285,6 +306,53 @@ class FileManager {
     showStatus(message, type = '') {
         this.uploadStatus.textContent = message;
         this.uploadStatus.className = 'status ' + type;
+    }
+
+    showAnnotateStatus(message, type = '') {
+        if (!this.annotateStatus) return;
+        this.annotateStatus.textContent = message;
+        this.annotateStatus.className = 'status ' + type;
+    }
+
+    async annotateFrames() {
+        this.showAnnotateStatus('Applying corrected labels...', 'uploading');
+        try {
+            const res = await fetch(`${this.backendBaseUrl}/frames/annotate`, {
+                method: 'POST'
+            });
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || 'Annotation failed');
+            }
+            const payload = await res.json();
+            const count = payload && payload.annotated ? payload.annotated : 0;
+            this.showAnnotateStatus(`Annotated ${count} frames.`, 'success');
+        } catch (err) {
+            this.showAnnotateStatus('Annotation error: ' + err.message, 'error');
+        }
+    }
+
+    async downloadAnnotatedFrames() {
+        this.showAnnotateStatus('Preparing download...', 'uploading');
+        try {
+            const res = await fetch(`${this.backendBaseUrl}/frames/annotated-zip`);
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || 'Download failed');
+            }
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'annotated_frames.zip';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            this.showAnnotateStatus('Download ready.', 'success');
+        } catch (err) {
+            this.showAnnotateStatus('Download error: ' + err.message, 'error');
+        }
     }
 }
 

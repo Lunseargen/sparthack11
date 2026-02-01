@@ -138,21 +138,8 @@ class VideoCaptureManager {
             formData.append('textbox2', this.textbox2.value);
             formData.append('timestamp', new Date().toISOString());
             
-            // Try to send to backend if available
-            const timeout = Promise.race([
-                fetch('api/save-frame', {
-                    method: 'POST',
-                    body: formData
-                }),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('timeout')), 1000)
-                )
-            ]);
-            
-            await timeout.catch(err => {
-                // Silently fallback to client-side storage
-                this.storeFrameLocally(blob);
-            });
+            // Store frame locally
+            this.storeFrameLocally(blob);
         } catch (err) {
             // Client-side frame storage fallback
             this.storeFrameLocally(blob);

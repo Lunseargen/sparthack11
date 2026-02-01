@@ -14,10 +14,9 @@ class FileManager {
         
         this.selectedFile = null;
         this.initEventListeners();
-        this.loadFileList();
-    }
-    
-    initEventListeners() {
+                // Backend removed: file listing disabled
+                this.displayFiles([]); // Optionally display an empty file list
+                this.showStatus('File listing is currently disabled', 'info');
         // Upload zone click
         this.uploadZone.addEventListener('click', () => this.fileInput.click());
         
@@ -134,8 +133,8 @@ class FileManager {
                 this.uploadBtn.disabled = false;
             });
             
-            // Use local storage fallback if server endpoint not available
-            xhr.open('POST', 'api/upload', true);
+            // Store file locally
+            // Backend upload removed
             xhr.send(formData);
             
         } catch (err) {
@@ -174,14 +173,8 @@ class FileManager {
     }
     
     loadFileList() {
-        // Try to fetch from server first
-        fetch('api/list-files')
-            .then(response => response.json())
-            .then(files => this.displayFiles(files))
-            .catch(err => {
-                // Fallback to IndexedDB
-                this.loadFilesFromIndexedDB();
-            });
+        // Load files from local storage only
+        this.loadFilesFromIndexedDB();
     }
     
     loadFilesFromIndexedDB() {

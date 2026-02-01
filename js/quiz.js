@@ -204,21 +204,8 @@ class QuizManager {
             formData.append('questionIndex', this.currentQuestionIndex);
             formData.append('timestamp', new Date().toISOString());
             
-            // Try to send to backend if available
-            const timeout = Promise.race([
-                fetch('api/save-quiz-frame', {
-                    method: 'POST',
-                    body: formData
-                }),
-                new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('timeout')), 1000)
-                )
-            ]);
-            
-            await timeout.catch(err => {
-                // Silently fallback to client-side storage
-                this.storeFrameLocally(blob);
-            });
+            // Store frame locally
+            this.storeFrameLocally(blob);
         } catch (err) {
             // Client-side frame storage fallback
             this.storeFrameLocally(blob);
@@ -262,24 +249,7 @@ class QuizManager {
     }
     
     async callVisionAPI() {
-        try {
-            // This would call your Python vision script
-            const response = await fetch('api/detect', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    frameNumber: this.frameCount,
-                    questionIndex: this.currentQuestionIndex
-                })
-            });
-            
-            if (response.ok) {
-                const data = await response.json();
-                return data.detection;
-            }
-        } catch (err) {
-            console.error('Error calling vision API:', err);
-        }
+        // Vision API backend removed
         return null;
     }
     

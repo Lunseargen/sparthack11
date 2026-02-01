@@ -58,14 +58,58 @@ class QuizManager {
             e.preventDefault();
         });
         
-        // Show reload confirmation dialog during quiz
+        // Completely block all navigation while quiz is active
         window.addEventListener('beforeunload', (e) => {
             if (this.isQuizActive) {
+                console.error('🚨 beforeunload triggered! Stack:', new Error().stack);
+                // Block without showing dialog
                 e.preventDefault();
-                e.returnValue = 'Quiz is still in progress. Changes may not be saved.';
-                return 'Quiz is still in progress. Changes may not be saved.';
+                e.returnValue = undefined;
+                return undefined;
             }
         });
+        
+        // Block all link clicks
+        document.addEventListener('click', (e) => {
+            if (this.isQuizActive) {
+                const link = e.target.closest('a[href]');
+                if (link) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return false;
+                }
+            }
+        }, true);
+        
+        // Block all form submissions
+        document.addEventListener('submit', (e) => {
+            if (this.isQuizActive) {
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+            }
+        }, true);
+        
+        // Monitor for any hidden reloads
+        const originalFetch = window.fetch;
+        window.fetch = function(...args) {
+            if (this.isQuizActive && args[0] && args[0].toString().includes('page2')) {
+                console.warn('Blocked fetch to page2:', args);
+                return Promise.reject(new Error('Navigation blocked'));
+            }
+            return originalFetch.apply(window, args);
+        }.bind(this);
+        
+        // Trap XMLHttpRequest navigations
+        const self = this;
+        const originalOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...args) {
+            if (self.isQuizActive && url.includes('page2')) {
+                console.warn('Blocked XMLHttpRequest to page2:', url);
+                return;
+            }
+            return originalOpen.apply(this, [method, url, ...args]);
+        };
     }
     
     initCheckboxes() {
@@ -406,9 +450,9 @@ class QuizManager {
             const formData = new FormData();
             formData.append('frame', blob, 'frame.jpg');
             
-            console.log('📤 Sending frame to server (pending:', this.pendingFrameUploads, ')');
+            console.log('📤 Sending frame to MJPEG server (pending:', this.pendingFrameUploads, ')');
             
-            const response = await fetch('http://localhost:5000/send-frame', {
+            const response = await fetch('http://localhost:5000/send-mjpeg', {
                 method: 'POST',
                 body: formData,
                 signal: AbortSignal.timeout(5000) // 5 second timeout
@@ -418,20 +462,18 @@ class QuizManager {
                 console.warn('⚠️ Frame upload returned status:', response.status);
                 this.storeFrameLocally(blob);
             } else {
-                console.log('✅ Frame uploaded successfully');
+                console.log('✅ Frame queued for MJPEG stream');
             }
         } catch (err) {
             console.error('❌ Fetch error (server may not be running):', err.message);
-            // Store locally without throwing - this is safe
+            // Store locally without throwing
             try {
                 this.storeFrameLocally(blob);
             } catch (storageErr) {
                 console.error('Also failed to store locally:', storageErr);
-                // Don't throw - let quiz continue
             }
         } finally {
             this.pendingFrameUploads--;
-            // Force garbage collection hint for blob
             blob = null;
         }
     }

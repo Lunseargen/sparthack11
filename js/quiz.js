@@ -57,6 +57,15 @@ class QuizManager {
             // Prevent default rejection behavior
             e.preventDefault();
         });
+        
+        // Show reload confirmation dialog during quiz
+        window.addEventListener('beforeunload', (e) => {
+            if (this.isQuizActive) {
+                e.preventDefault();
+                e.returnValue = 'Quiz is still in progress. Changes may not be saved.';
+                return 'Quiz is still in progress. Changes may not be saved.';
+            }
+        });
     }
     
     initCheckboxes() {
@@ -152,39 +161,62 @@ class QuizManager {
     
     async startQuiz() {
         try {
-            console.log('Starting quiz...');
+            console.log('═══ startQuiz() called ═══');
+            console.log('Step 1: Updating status to "Requesting camera access..."');
             this.updateStatus('Requesting camera access...', 'info');
             
+            console.log('Step 2: Calling getUserMedia...');
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { width: { ideal: 1280 }, height: { ideal: 720 } },
                 audio: false
             });
+            console.log('Step 3: Camera stream obtained, stream ID:', stream.id);
             
-            console.log('Camera stream obtained');
+            console.log('Step 4: Setting videoElement.srcObject');
             this.videoElement.srcObject = stream;
+            console.log('Step 5: videoElement.srcObject set successfully');
             
+            console.log('Step 6: Setting quiz state variables');
             this.isQuizActive = true;
+            console.log('  - isQuizActive = true');
             this.currentQuestionIndex = 0;
+            console.log('  - currentQuestionIndex = 0');
             this.correctAnswers = 0;
+            console.log('  - correctAnswers = 0');
             this.totalAnswers = 0;
+            console.log('  - totalAnswers = 0');
             this.frameCount = 0;
+            console.log('  - frameCount = 0');
             
+            console.log('Step 7: Disabling/enabling buttons');
             this.startBtn.disabled = true;
+            console.log('  - startBtn disabled');
             this.stopBtn.disabled = false;
+            console.log('  - stopBtn enabled');
             this.nextBtn.disabled = false;
+            console.log('  - nextBtn enabled');
             
-            console.log('Quiz state initialized, loading question...');
+            console.log('Step 8: Loading question...');
             this.loadQuestion(0);
+            console.log('Step 9: Question loaded');
             
-            console.log('Starting frame capture...');
+            console.log('Step 10: Starting frame capture...');
             this.startFrameCapture();
+            console.log('Step 11: Frame capture started');
             
+            console.log('Step 12: Updating status to "Quiz started!"');
             this.updateStatus('Quiz started!', 'info');
-            console.log('Quiz started successfully');
+            
+            console.log('═══ Quiz started successfully ═══');
             
         } catch (err) {
-            console.error('Error starting quiz:', err);
-            this.updateStatus('Error accessing camera: ' + err.message, 'error');
+            console.error('❌ ERROR in startQuiz:', err);
+            console.error('Stack trace:', err.stack);
+            try {
+                this.updateStatus('Error accessing camera: ' + err.message, 'error');
+            } catch (statusErr) {
+                console.error('Failed to update status:', statusErr);
+            }
         }
     }
     
@@ -265,20 +297,23 @@ class QuizManager {
     }
     
     startFrameCapture() {
-        console.log('Frame capture started');
+        console.log('🎥 Frame capture started');
         let logCounter = 0;
+        let captureAttempts = 0;
         
         const captureLoop = () => {
             try {
+                captureAttempts++;
+                
                 if (!this.isQuizActive) {
-                    console.log('Quiz not active, stopping capture loop');
+                    console.log('Quiz not active, stopping capture loop (attempt', captureAttempts, ')');
                     return;
                 }
                 
                 if (this.frameCount < this.maxFrames) {
                     logCounter++;
                     if (logCounter % 10 === 0) {
-                        console.log(`Capturing frame ${this.frameCount}...`);
+                        console.log(`[Frame ${this.frameCount}] Pending uploads: ${this.pendingFrameUploads}/${this.maxPendingFrames}`);
                         // Log memory usage if available
                         if (performance.memory) {
                             const memoryMB = (performance.memory.usedJSHeapSize / 1048576).toFixed(2);
@@ -292,7 +327,8 @@ class QuizManager {
                 
                 setTimeout(captureLoop, 33); // ~30fps
             } catch (err) {
-                console.error('Frame capture loop error:', err, err.stack);
+                console.error('❌ Frame capture loop error (attempt', captureAttempts, '):', err);
+                console.error('Stack:', err.stack);
                 // Continue capture even if there's an error
                 if (this.isQuizActive) {
                     setTimeout(captureLoop, 33);
@@ -300,7 +336,7 @@ class QuizManager {
             }
         };
         
-        console.log('Starting capture loop');
+        console.log('🎥 Starting capture loop');
         captureLoop();
     }
     
@@ -316,6 +352,7 @@ class QuizManager {
             
             if (this.canvas.width === 0 || this.canvas.height === 0) {
                 // Video stream not ready yet
+                console.debug(`Video not ready: ${this.canvas.width}x${this.canvas.height}`);
                 return;
             }
             
@@ -324,12 +361,12 @@ class QuizManager {
             this.canvas.toBlob((blob) => {
                 try {
                     if (!blob) {
-                        console.warn('Blob is null');
+                        console.warn('Blob is null after toBlob');
                         return;
                     }
                     
                     if (blob.size === 0) {
-                        console.warn('Blob is empty');
+                        console.warn('Blob is empty after toBlob');
                         return;
                     }
                     
@@ -346,7 +383,8 @@ class QuizManager {
             // Clear canvas to prevent memory buildup
             this.canvasContext.clearRect(0, 0, this.canvas.width, this.canvas.height);
         } catch (err) {
-            console.error('Error in captureFrameToServer:', err, err.stack);
+            console.error('❌ Error in captureFrameToServer:', err);
+            console.error('Stack:', err.stack);
         }
     }
     
@@ -368,19 +406,29 @@ class QuizManager {
             const formData = new FormData();
             formData.append('frame', blob, 'frame.jpg');
             
+            console.log('📤 Sending frame to server (pending:', this.pendingFrameUploads, ')');
+            
             const response = await fetch('http://localhost:5000/send-frame', {
                 method: 'POST',
-                body: formData
+                body: formData,
+                signal: AbortSignal.timeout(5000) // 5 second timeout
             });
             
             if (!response.ok) {
-                console.warn('Frame upload returned status:', response.status);
+                console.warn('⚠️ Frame upload returned status:', response.status);
                 this.storeFrameLocally(blob);
+            } else {
+                console.log('✅ Frame uploaded successfully');
             }
         } catch (err) {
-            console.error('Fetch error (server may not be running):', err.message);
-            // Silently fallback to local storage without throwing
-            this.storeFrameLocally(blob);
+            console.error('❌ Fetch error (server may not be running):', err.message);
+            // Store locally without throwing - this is safe
+            try {
+                this.storeFrameLocally(blob);
+            } catch (storageErr) {
+                console.error('Also failed to store locally:', storageErr);
+                // Don't throw - let quiz continue
+            }
         } finally {
             this.pendingFrameUploads--;
             // Force garbage collection hint for blob

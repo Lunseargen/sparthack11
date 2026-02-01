@@ -15,11 +15,14 @@ class VideoCaptureManager {
         this.mediaRecorder = null;
         this.recordedChunks = [];
         this.frameCount = 0;
-        this.maxFrames = 1000;
+        this.maxFrames = 300;
         this.isRecording = false;
         this.canvas = document.createElement('canvas');
         this.canvasContext = this.canvas.getContext('2d');
-        
+
+        this.streamMonitor = null;
+        this.lastFrameAt = 0;
+
         this.initEventListeners();
     }
     
@@ -44,10 +47,7 @@ class VideoCaptureManager {
     
     async startRecording() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-                audio: false
-            });
+            const stream = await this.getPreferredVideoStream();
             
             this.videoElement.srcObject = stream;
             
@@ -69,7 +69,9 @@ class VideoCaptureManager {
                 this.startBtn.disabled = true;
                 this.stopBtn.disabled = false;
                 this.updateStatus('Recording... ' + this.frameCount + ' frames captured', 'recording');
-                this.startFrameCapture();
+                this.lastFrameAt = Date.now();
+            this.startFrameCapture();
+            this.startStreamMonitor();
             };
             
             this.mediaRecorder.onstop = () => {
@@ -86,6 +88,58 @@ class VideoCaptureManager {
         }
     }
     
+
+    async getPreferredVideoStream() {
+        const baseConstraints = {
+            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false
+        };
+
+        // First request permission with generic constraints.
+        const initialStream = await navigator.mediaDevices.getUserMedia(baseConstraints);
+        const currentTrack = initialStream.getVideoTracks()[0];
+        const currentSettings = currentTrack ? currentTrack.getSettings() : {};
+        const currentDeviceId = currentSettings.deviceId || '';
+
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const videoInputs = devices.filter(d => d.kind === 'videoinput');
+
+            if (videoInputs.length === 0) {
+                return initialStream;
+            }
+
+            // Prefer common built-in webcam labels if available.
+            const preferPattern = /integrated|webcam|usb|hd|camera/i;
+            const avoidPattern = /phone|mobile|virtual|loopback|continuity/i;
+
+            let chosen = videoInputs.find(d => d.label && preferPattern.test(d.label) && !avoidPattern.test(d.label));
+
+            if (!chosen) {
+                // Avoid the current device if multiple cameras exist.
+                const alternate = videoInputs.find(d => d.deviceId && d.deviceId !== currentDeviceId && !avoidPattern.test(d.label || ''));
+                chosen = alternate || videoInputs.find(d => !avoidPattern.test(d.label || '')) || videoInputs[0];
+            }
+
+            if (chosen && chosen.deviceId) {
+                // Stop the initial stream before opening the selected device.
+                initialStream.getTracks().forEach(track => track.stop());
+                return await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        deviceId: { exact: chosen.deviceId },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
+                });
+            }
+        } catch (err) {
+            console.warn('Camera selection failed, using initial stream.', err);
+        }
+
+        return initialStream;
+    }
+
     stopRecording() {
         if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
             this.mediaRecorder.stop();
@@ -95,6 +149,11 @@ class VideoCaptureManager {
                 this.videoElement.srcObject.getTracks().forEach(track => track.stop());
             }
         }
+
+        if (this.streamMonitor) {
+            clearInterval(this.streamMonitor);
+            this.streamMonitor = null;
+        }
     }
     
     startFrameCapture() {
@@ -102,11 +161,9 @@ class VideoCaptureManager {
             try {
                 if (!this.isRecording) return;
                 
-                if (this.frameCount < this.maxFrames) {
-                    this.captureFrameToServer();
-                    this.frameCount++;
-                    this.updateStatus(`Recording... ${this.frameCount}/${this.maxFrames} frames captured. Textbox 1: ${this.textbox1.value.substring(0, 20)}...`, 'recording');
-                }
+                this.captureFrameToServer();
+                this.frameCount++;
+                this.updateStatus(`Recording... ${this.frameCount}/${this.maxFrames} frames captured. Textbox 1: ${this.textbox1.value.substring(0, 20)}...`, 'recording');
                 
                 setTimeout(captureLoop, 33); // ~30fps
             } catch (err) {
@@ -131,6 +188,7 @@ class VideoCaptureManager {
             this.canvas.width = this.videoElement.videoWidth;
             this.canvas.height = this.videoElement.videoHeight;
             this.canvasContext.drawImage(this.videoElement, 0, 0);
+            this.lastFrameAt = Date.now();
             
             this.canvas.toBlob((blob) => {
                 if (blob) {
@@ -157,6 +215,7 @@ class VideoCaptureManager {
             }
             
             this.canvasContext.drawImage(this.videoElement, 0, 0);
+            this.lastFrameAt = Date.now();
             
             this.canvas.toBlob((blob) => {
                 if (blob && this.isRecording) {

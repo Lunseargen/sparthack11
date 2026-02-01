@@ -7,7 +7,7 @@ import io
 import os
 from datetime import datetime
 import threading
-import queue
+from collections import deque
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True)
@@ -17,9 +17,9 @@ FRAMES_DIR = 'frames'
 if not os.path.exists(FRAMES_DIR):
     os.makedirs(FRAMES_DIR)
 
-# MJPEG stream queue
-frame_queue = queue.Queue(maxsize=30)
-frame_count = 0
+# MJPEG stream deque - automatically drops oldest frames when new ones exceed max size
+MAX_QUEUE_SIZE = 250
+frame_queue = deque(maxlen=MAX_QUEUE_SIZE)
 frame_lock = threading.Lock()
 
 @app.route('/send-mjpeg', methods=['POST', 'OPTIONS'])
@@ -48,22 +48,12 @@ def receive_mjpeg_frame():
             return jsonify({'status': 'error', 'message': f'Invalid image data: {str(e)}'}), 400
         
         # Add to queue for MJPEG stream
-        try:
-            frame_queue.put_nowait((frame, frame_data))
-        except queue.Full:
-            pass  # Drop frame if queue is full
-        
-        # Save to disk
+        # deque with maxlen automatically drops oldest frames when limit exceeded
         with frame_lock:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            frame_path = os.path.join(FRAMES_DIR, f'frame_{frame_count:05d}_{timestamp}.jpg')
-            cv2.imwrite(frame_path, frame)
-            frame_count += 1
-            
-            if frame_count % 30 == 0:
-                print(f"✓ Received {frame_count} frames...")
+            frame_queue.append((frame, frame_data))
         
-        return jsonify({'status': 'success', 'frame_count': frame_count}), 200
+        # Return success (no disk saving)
+        return jsonify({'status': 'success', 'queued': True}), 200
     except Exception as e:
         print(f"ERROR: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 400
@@ -74,12 +64,20 @@ def stream_mjpeg():
     def generate():
         while True:
             try:
-                frame, frame_data = frame_queue.get(timeout=1)
+                with frame_lock:
+                    if frame_queue:
+                        frame, frame_data = frame_queue[0]  # Get oldest frame
+                        # Manually remove after reading to prevent rapid re-reading
+                        frame_queue.popleft()
+                    else:
+                        continue
+                
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n'
                        b'Content-Length: ' + str(len(frame_data)).encode() + b'\r\n\r\n' +
                        frame_data + b'\r\n')
-            except queue.Empty:
+            except Exception as e:
+                print(f"Stream error: {e}")
                 continue
     
     return Response(generate(),
@@ -89,13 +87,17 @@ def stream_mjpeg():
 def health():
     """Health check endpoint"""
     with frame_lock:
-        count = frame_count
-    return jsonify({'status': 'ok', 'frames': count}), 200
+        queue_size = len(frame_queue)
+    return jsonify({'status': 'ok', 'queue_size': queue_size, 'max_size': MAX_QUEUE_SIZE}), 200
 
 if __name__ == '__main__':
+    max_queue_size = 250
+    queue_memory_mb = (max_queue_size * 150) / 1024  # ~150KB per frame average
+    
     print("=" * 50)
     print("Starting Flask MJPEG server on http://localhost:5000")
     print(f"Saving frames to: {os.path.abspath(FRAMES_DIR)}")
+    print(f"MJPEG Queue: {max_queue_size} frames (~{queue_memory_mb:.1f}MB, ~8 seconds at 30fps)")
     print("Frame upload endpoint: POST /send-mjpeg")
     print("Stream endpoint: GET /stream-mjpeg")
     print("Press Ctrl+C to stop")

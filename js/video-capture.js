@@ -8,6 +8,10 @@ class VideoCaptureManager {
         this.stopBtn = document.getElementById('stopBtn');
         this.captureFrameBtn = document.getElementById('captureFrameBtn');
         this.speakerBtn = document.getElementById('speakerBtn');
+        this.refreshLogsBtn = document.getElementById('refreshLogsBtn');
+        this.loadDemoBtn = document.getElementById('loadDemoBtn');
+        this.demoFileInput = document.getElementById('demoFileInput');
+        this.clearDataBtn = document.getElementById('clearDataBtn');
         this.status = document.getElementById('status');
         this.textbox1 = document.getElementById('textbox1');
         this.textbox2 = document.getElementById('textbox2');
@@ -47,6 +51,29 @@ class VideoCaptureManager {
             e.preventDefault();
             this.playAudio();
         });
+        if (this.refreshLogsBtn) {
+            this.refreshLogsBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.manualRefreshLogs();
+            });
+        }
+        if (this.loadDemoBtn) {
+            this.loadDemoBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.demoFileInput.click();
+            });
+        }
+        if (this.demoFileInput) {
+            this.demoFileInput.addEventListener('change', (e) => {
+                this.loadDemoDataFromFile(e);
+            });
+        }
+        if (this.clearDataBtn) {
+            this.clearDataBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.clearDetectionData();
+            });
+        }
     }
 
     getBackendBaseUrl() {
@@ -94,6 +121,75 @@ class VideoCaptureManager {
         if (Array.isArray(corrected) && this.textbox3) {
             const words = corrected.map(item => item.string).filter(Boolean).join(' ');
             this.textbox3.value = words;
+        }
+    }
+
+    async manualRefreshLogs() {
+        this.updateStatus('Refreshing logs...', 'recording');
+        try {
+            await this.refreshLogs();
+            this.updateStatus('Logs refreshed successfully!', 'success');
+        } catch (err) {
+            this.updateStatus('Error refreshing logs: ' + err.message, 'error');
+        }
+    }
+
+    async loadDemoDataFromFile(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        this.updateStatus('Loading demo data...', 'recording');
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+
+            if (!Array.isArray(data)) {
+                throw new Error('Invalid format: expected an array of detection entries');
+            }
+
+            // Send the data to the server to replace detections.json
+            const res = await fetch(`${this.backendBaseUrl}/detections/load`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+
+            if (!res.ok) {
+                const errText = await res.text();
+                throw new Error(errText || 'Failed to load demo data');
+            }
+
+            // Refresh logs to update textboxes
+            await this.refreshLogs();
+            this.updateStatus(`Demo data loaded: ${data.length} entries`, 'success');
+        } catch (err) {
+            this.updateStatus('Error loading demo data: ' + err.message, 'error');
+        } finally {
+            // Reset file input so the same file can be loaded again
+            event.target.value = '';
+        }
+    }
+
+    async clearDetectionData() {
+        this.updateStatus('Clearing detection data...', 'recording');
+        try {
+            const res = await fetch(`${this.backendBaseUrl}/detections/clear`, {
+                method: 'POST'
+            });
+
+            if (!res.ok) {
+                const errText = await res.text();
+                throw new Error(errText || 'Failed to clear data');
+            }
+
+            // Clear textboxes
+            if (this.textbox1) this.textbox1.value = '';
+            if (this.textbox2) this.textbox2.value = '';
+            if (this.textbox3) this.textbox3.value = '';
+
+            this.updateStatus('Detection data cleared!', 'success');
+        } catch (err) {
+            this.updateStatus('Error clearing data: ' + err.message, 'error');
         }
     }
 

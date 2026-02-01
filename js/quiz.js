@@ -200,14 +200,15 @@ class QuizManager {
         try {
             const formData = new FormData();
             formData.append('frame', blob);
-            formData.append('frameNumber', this.frameCount);
-            formData.append('questionIndex', this.currentQuestionIndex);
-            formData.append('timestamp', new Date().toISOString());
             
-            // Store frame locally
-            this.storeFrameLocally(blob);
+            fetch('http://localhost:5000/send-frame', {
+                method: 'POST',
+                body: formData
+            }).catch(err => {
+                // Silently fallback to local storage
+                this.storeFrameLocally(blob);
+            });
         } catch (err) {
-            // Client-side frame storage fallback
             this.storeFrameLocally(blob);
         }
     }

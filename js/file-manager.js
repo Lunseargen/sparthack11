@@ -1,0 +1,301 @@
+// File Manager Module for Page 3
+// Handles MP4 file upload and download
+
+class FileManager {
+    constructor() {
+        this.uploadZone = document.getElementById('uploadZone');
+        this.fileInput = document.getElementById('fileInput');
+        this.uploadBtn = document.getElementById('uploadBtn');
+        this.fileListContainer = document.getElementById('fileListContainer');
+        this.uploadStatus = document.getElementById('uploadStatus');
+        this.progressBar = document.getElementById('progressBar');
+        this.progressFill = document.getElementById('progressFill');
+        this.fileInfo = document.getElementById('fileInfo');
+        
+        this.selectedFile = null;
+        this.initEventListeners();
+        this.loadFileList();
+    }
+    
+    initEventListeners() {
+        // Upload zone click
+        this.uploadZone.addEventListener('click', () => this.fileInput.click());
+        
+        // File input change
+        this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+        
+        // Drag and drop
+        this.uploadZone.addEventListener('dragover', (e) => this.handleDragOver(e));
+        this.uploadZone.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+        this.uploadZone.addEventListener('drop', (e) => this.handleDrop(e));
+        
+        // Upload button
+        this.uploadBtn.addEventListener('click', () => this.uploadFile());
+    }
+    
+    handleFileSelect(event) {
+        const files = event.target.files;
+        if (files.length > 0) {
+            this.selectFile(files[0]);
+        }
+    }
+    
+    selectFile(file) {
+        // Validate file type
+        if (!file.name.toLowerCase().endsWith('.mp4')) {
+            this.showStatus('Please select an MP4 file', 'error');
+            return;
+        }
+        
+        // Validate file size (500MB max)
+        if (file.size > 500 * 1024 * 1024) {
+            this.showStatus('File size exceeds 500MB limit', 'error');
+            return;
+        }
+        
+        this.selectedFile = file;
+        this.uploadBtn.disabled = false;
+        
+        // Show file info
+        const sizeMB = (file.size / 1024 / 1024).toFixed(2);
+        this.fileInfo.textContent = `Selected: ${file.name} (${sizeMB} MB)`;
+        this.fileInfo.style.color = '#28a745';
+        
+        this.showStatus('File selected. Click "Upload File" to proceed.', 'success');
+    }
+    
+    handleDragOver(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.uploadZone.classList.add('drag-over');
+    }
+    
+    handleDragLeave(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.uploadZone.classList.remove('drag-over');
+    }
+    
+    handleDrop(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.uploadZone.classList.remove('drag-over');
+        
+        const files = event.dataTransfer.files;
+        if (files.length > 0) {
+            this.selectFile(files[0]);
+        }
+    }
+    
+    async uploadFile() {
+        if (!this.selectedFile) {
+            this.showStatus('No file selected', 'error');
+            return;
+        }
+        
+        const formData = new FormData();
+        formData.append('file', this.selectedFile);
+        
+        this.uploadBtn.disabled = true;
+        this.progressBar.style.display = 'block';
+        this.showStatus('Uploading...', 'uploading');
+        
+        try {
+            const xhr = new XMLHttpRequest();
+            
+            // Progress update
+            xhr.upload.addEventListener('progress', (event) => {
+                if (event.lengthComputable) {
+                    const percentComplete = (event.loaded / event.total) * 100;
+                    this.progressFill.style.width = percentComplete + '%';
+                }
+            });
+            
+            xhr.addEventListener('load', () => {
+                if (xhr.status === 200) {
+                    this.showStatus('File uploaded successfully!', 'success');
+                    this.progressFill.style.width = '0%';
+                    this.progressBar.style.display = 'none';
+                    this.fileInfo.textContent = '';
+                    this.fileInput.value = '';
+                    this.selectedFile = null;
+                    this.uploadBtn.disabled = true;
+                    
+                    // Reload file list
+                    setTimeout(() => this.loadFileList(), 500);
+                } else {
+                    this.showStatus('Upload failed: ' + xhr.statusText, 'error');
+                    this.uploadBtn.disabled = false;
+                }
+            });
+            
+            xhr.addEventListener('error', () => {
+                this.showStatus('Upload error occurred', 'error');
+                this.uploadBtn.disabled = false;
+            });
+            
+            // Use local storage fallback if server endpoint not available
+            xhr.open('POST', 'api/upload', true);
+            xhr.send(formData);
+            
+        } catch (err) {
+            // Fallback: Store in IndexedDB
+            this.storeFileLocally(this.selectedFile);
+            this.showStatus('File stored locally', 'success');
+            this.uploadBtn.disabled = true;
+            setTimeout(() => this.loadFileList(), 500);
+        }
+    }
+    
+    async storeFileLocally(file) {
+        if ('indexedDB' in window) {
+            const request = indexedDB.open('FileDB', 1);
+            
+            request.onupgradeneeded = () => {
+                const db = request.result;
+                if (!db.objectStoreNames.contains('files')) {
+                    db.createObjectStore('files', { keyPath: 'id', autoIncrement: true });
+                }
+            };
+            
+            request.onsuccess = () => {
+                const db = request.result;
+                const transaction = db.transaction(['files'], 'readwrite');
+                const store = transaction.objectStore('files');
+                store.add({
+                    name: file.name,
+                    size: file.size,
+                    type: file.type,
+                    data: file,
+                    uploadDate: new Date().toISOString()
+                });
+            };
+        }
+    }
+    
+    loadFileList() {
+        // Try to fetch from server first
+        fetch('api/list-files')
+            .then(response => response.json())
+            .then(files => this.displayFiles(files))
+            .catch(err => {
+                // Fallback to IndexedDB
+                this.loadFilesFromIndexedDB();
+            });
+    }
+    
+    loadFilesFromIndexedDB() {
+        if ('indexedDB' in window) {
+            const request = indexedDB.open('FileDB', 1);
+            
+            request.onsuccess = () => {
+                const db = request.result;
+                const transaction = db.transaction(['files'], 'readonly');
+                const store = transaction.objectStore('files');
+                const getAllRequest = store.getAll();
+                
+                getAllRequest.onsuccess = () => {
+                    this.displayFiles(getAllRequest.result);
+                };
+            };
+        }
+    }
+    
+    displayFiles(files) {
+        if (!files || files.length === 0) {
+            this.fileListContainer.innerHTML = '<div class="empty-message">No files uploaded yet</div>';
+            return;
+        }
+        
+        this.fileListContainer.innerHTML = '';
+        
+        files.forEach((file, index) => {
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            
+            const fileName = document.createElement('div');
+            fileName.className = 'file-name';
+            fileName.textContent = file.name;
+            
+            const fileSize = document.createElement('div');
+            fileSize.className = 'file-size';
+            fileSize.textContent = this.formatFileSize(file.size);
+            
+            const downloadBtn = document.createElement('button');
+            downloadBtn.className = 'download-btn';
+            downloadBtn.textContent = '⬇️ Download';
+            downloadBtn.addEventListener('click', () => this.downloadFile(file, index));
+            
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'delete-btn';
+            deleteBtn.textContent = '🗑️ Delete';
+            deleteBtn.addEventListener('click', () => this.deleteFile(index));
+            
+            fileItem.appendChild(fileName);
+            fileItem.appendChild(fileSize);
+            fileItem.appendChild(downloadBtn);
+            fileItem.appendChild(deleteBtn);
+            
+            this.fileListContainer.appendChild(fileItem);
+        });
+    }
+    
+    downloadFile(file, index) {
+        if (file.data instanceof Blob) {
+            // Local file from IndexedDB
+            const url = URL.createObjectURL(file.data);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = file.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        } else {
+            // Server file
+            const a = document.createElement('a');
+            a.href = `api/download/${index}`;
+            a.download = file.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+    }
+    
+    deleteFile(index) {
+        if (confirm('Are you sure you want to delete this file?')) {
+            if ('indexedDB' in window) {
+                const request = indexedDB.open('FileDB', 1);
+                
+                request.onsuccess = () => {
+                    const db = request.result;
+                    const transaction = db.transaction(['files'], 'readwrite');
+                    const store = transaction.objectStore('files');
+                    store.delete(index + 1);
+                    
+                    this.loadFileList();
+                };
+            }
+        }
+    }
+    
+    formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        
+        return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+    }
+    
+    showStatus(message, type = '') {
+        this.uploadStatus.textContent = message;
+        this.uploadStatus.className = 'status ' + type;
+    }
+}
+
+// Initialize when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    new FileManager();
+});

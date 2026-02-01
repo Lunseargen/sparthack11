@@ -8,6 +8,7 @@ class FileManager {
         this.uploadBtn = document.getElementById('uploadBtn');
         this.fileListContainer = document.getElementById('fileListContainer');
         this.uploadStatus = document.getElementById('uploadStatus');
+        this.processVideoBtn = document.getElementById('processVideoBtn');
         this.progressBar = document.getElementById('progressBar');
         this.progressFill = document.getElementById('progressFill');
         this.fileInfo = document.getElementById('fileInfo');
@@ -17,23 +18,40 @@ class FileManager {
         this.backendBaseUrl = this.getBackendBaseUrl();
         
         this.selectedFile = null;
-        this.initEventListeners();
-                // Backend removed: file listing disabled
-                this.displayFiles([]); // Optionally display an empty file list
-                this.showStatus('File listing is currently disabled', 'info');
-        // Upload zone click
-        this.uploadZone.addEventListener('click', () => this.fileInput.click());
-        
-        // File input change
-        this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
-        
-        // Drag and drop
-        this.uploadZone.addEventListener('dragover', (e) => this.handleDragOver(e));
-        this.uploadZone.addEventListener('dragleave', (e) => this.handleDragLeave(e));
-        this.uploadZone.addEventListener('drop', (e) => this.handleDrop(e));
+        // Backend removed: file listing disabled
+        this.displayFiles([]); // Optionally display an empty file list
+        this.showStatus('File listing is currently disabled', 'info');
+
+        if (this.uploadZone && this.fileInput) {
+            // Upload zone click
+            this.uploadZone.addEventListener('click', () => this.fileInput.click());
+
+            // File input change
+            this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+
+            // Drag and drop
+            this.uploadZone.addEventListener('dragover', (e) => this.handleDragOver(e));
+            this.uploadZone.addEventListener('dragleave', (e) => this.handleDragLeave(e));
+            this.uploadZone.addEventListener('drop', (e) => this.handleDrop(e));
+        }
+
+        // Prevent browser from opening files on drop outside the zone
+        document.addEventListener('dragover', (e) => {
+            e.preventDefault();
+        });
+        document.addEventListener('drop', (e) => {
+            e.preventDefault();
+        });
         
         // Upload button
-        this.uploadBtn.addEventListener('click', () => this.uploadFile());
+        if (this.uploadBtn) {
+            this.uploadBtn.addEventListener('click', () => this.uploadFile());
+        }
+
+        // Process video button
+        if (this.processVideoBtn) {
+            this.processVideoBtn.addEventListener('click', () => this.processVideo());
+        }
 
         if (this.annotateBtn) {
             this.annotateBtn.addEventListener('click', () => this.annotateFrames());
@@ -75,6 +93,9 @@ class FileManager {
         
         this.selectedFile = file;
         this.uploadBtn.disabled = false;
+        if (this.processVideoBtn) {
+            this.processVideoBtn.disabled = false;
+        }
         
         // Show file info
         const sizeMB = (file.size / 1024 / 1024).toFixed(2);
@@ -352,6 +373,42 @@ class FileManager {
             this.showAnnotateStatus('Download ready.', 'success');
         } catch (err) {
             this.showAnnotateStatus('Download error: ' + err.message, 'error');
+        }
+    }
+
+    async processVideo() {
+        if (!this.selectedFile) {
+            this.showStatus('No file selected', 'error');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', this.selectedFile);
+
+        if (this.processVideoBtn) this.processVideoBtn.disabled = true;
+        this.showStatus('Processing video with YOLO detection... This may take a while.', 'uploading');
+
+        try {
+            const res = await fetch(`${this.backendBaseUrl}/video/process`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || 'Processing failed');
+            }
+
+            const result = await res.json();
+            const msg = `Processed ${result.total_frames} frames. ` +
+                        `Detections: ${result.detections}, Words: ${result.words}`;
+            this.showStatus(msg, 'success');
+        } catch (err) {
+            this.showStatus('Processing error: ' + err.message, 'error');
+        } finally {
+            if (this.processVideoBtn && this.selectedFile) {
+                this.processVideoBtn.disabled = false;
+            }
         }
     }
 }

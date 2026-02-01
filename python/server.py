@@ -45,10 +45,7 @@ WRITE_EVERY = int(os.environ.get('YOLO_WRITE_EVERY', '1'))
 MAX_ENTRIES = int(os.environ.get('YOLO_MAX_ENTRIES', '2000'))
 DETECTION_ENABLED = os.environ.get('YOLO_ENABLE', '1') == '1'
 MAX_FRAMES_ON_DISK = int(os.environ.get('MAX_FRAMES_ON_DISK', '300'))
-ELEVEN_KEY_PATH = Path(__file__).parent / 'elevenKEY'
-GEMINI_KEY_PATH = Path(__file__).parent / 'geminiKEY'
 CORRECTED_LOG = Path(__file__).parent / 'CorrectedLog.json'
-ELEVEN_VOICE_ID = os.environ.get('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')
 ANNOTATED_FRAMES_DIR = Path(__file__).parent / 'frames_annotated'
 
 # Keep last N detections in memory
@@ -178,86 +175,20 @@ def compact_detection_ranges(
     return compacted
 
 
-def _read_api_key(path: Path) -> str | None:
-    try:
-        key = path.read_text(encoding='utf-8').strip()
-        return key or None
-    except Exception as e:
-        print(f"WARNING: Failed to read API key from {path}: {e}")
-        return None
-
-
-def _gemini_correct_word(raw_word: str, context: str, api_key: str | None) -> str | None:
-    if not api_key:
-        return None
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-1.5-flash:generateContent?key=" + api_key
-    )
-    prompt = (
-        "You correct ASL letter sequences into likely English words. "
-        "Return only the corrected word, no punctuation. "
-        f"Letters: {raw_word}. Context: {context}"
-    )
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 16},
-    }
-    try:
-        data = json.dumps(payload).encode('utf-8')
-        req = urlrequest.Request(url, data=data, headers={"Content-Type": "application/json"})
-        with urlrequest.urlopen(req, timeout=10) as resp:
-            resp_data = json.loads(resp.read().decode('utf-8'))
-        text = (
-            resp_data.get('candidates', [{}])[0]
-            .get('content', {})
-            .get('parts', [{}])[0]
-            .get('text', '')
-        )
-        word = text.strip().split()[0] if text else None
-        return word
-    except Exception as e:
-        print(f"WARNING: Gemini correction failed: {e}")
-        return None
-
-
-def _elevenlabs_correct_word(raw_word: str, context: str, api_key: str | None) -> str | None:
-    if not api_key:
-        return None
-    url = os.environ.get('ELEVENLABS_LLM_URL', 'https://api.elevenlabs.io/v1/llm/completions')
-    payload = {
-        "prompt": (
-            "You correct ASL letter sequences into likely English words. "
-            "Return only the corrected word, no punctuation. "
-            f"Letters: {raw_word}. Context: {context}"
-        ),
-        "max_tokens": 16,
-        "temperature": 0.2,
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "xi-api-key": api_key,
-    }
-    try:
-        data = json.dumps(payload).encode('utf-8')
-        req = urlrequest.Request(url, data=data, headers=headers)
-        with urlrequest.urlopen(req, timeout=10) as resp:
-            resp_data = json.loads(resp.read().decode('utf-8'))
-        text = resp_data.get('text')
-        if not text and 'choices' in resp_data:
-            text = resp_data.get('choices', [{}])[0].get('text')
-        word = text.strip().split()[0] if text else None
-        return word
-    except Exception as e:
-        print(f"WARNING: ElevenLabs correction failed: {e}")
-        return None
-
-
 def _extract_words_from_compacted(compacted: list[dict]) -> list[dict]:
+    """
+    Extract word entries from compacted detection ranges.
+    
+    Treats 'sp', 'space', '_', 'fn', 'none' as word separators.
+    Each word entry contains the frame range and the raw letter sequence.
+    """
     words = []
     current = []
     word_start = None
     word_end = None
+
+    # Labels that indicate word boundaries (space, no hand detected, etc.)
+    separator_labels = {'sp', 'space', '_', 'fn', 'none'}
 
     for entry in compacted:
         label = entry.get('label')
@@ -272,7 +203,8 @@ def _extract_words_from_compacted(compacted: list[dict]) -> list[dict]:
         except Exception:
             continue
 
-        if label in {'sp', 'space', '_'}:
+        if label in separator_labels:
+            # End current word if there is one
             if current:
                 words.append({
                     'frameRange': f"{word_start}-{word_end}",
@@ -283,9 +215,7 @@ def _extract_words_from_compacted(compacted: list[dict]) -> list[dict]:
                 word_end = None
             continue
 
-        if label in {'fn', 'none'}:
-            continue
-
+        # It's an actual letter label
         if word_start is None:
             word_start = start_frame
         word_end = end_frame
@@ -300,6 +230,129 @@ def _extract_words_from_compacted(compacted: list[dict]) -> list[dict]:
     return words
 
 
+# Common English words dictionary for matching ASL letter sequences
+COMMON_WORDS = {
+    # 1-letter
+    'a', 'i',
+    # 2-letter
+    'am', 'an', 'as', 'at', 'be', 'by', 'do', 'go', 'he', 'hi', 'if', 'in',
+    'is', 'it', 'me', 'my', 'no', 'of', 'ok', 'on', 'or', 'so', 'to', 'up',
+    'us', 'we',
+    # 3-letter
+    'all', 'and', 'any', 'are', 'ask', 'bad', 'big', 'boy', 'but', 'buy',
+    'can', 'car', 'cat', 'dad', 'day', 'did', 'dog', 'eat', 'end', 'eye',
+    'far', 'few', 'for', 'fun', 'get', 'god', 'got', 'guy', 'had', 'has',
+    'her', 'him', 'his', 'hot', 'how', 'its', 'job', 'joy', 'just', 'keep',
+    'key', 'kid', 'let', 'lot', 'man', 'may', 'mom', 'mrs', 'new', 'not',
+    'now', 'off', 'old', 'one', 'our', 'out', 'own', 'pay', 'put', 'ran',
+    'run', 'sad', 'sat', 'saw', 'say', 'see', 'set', 'she', 'sit', 'six',
+    'son', 'ten', 'the', 'too', 'top', 'try', 'two', 'use', 'war', 'was',
+    'way', 'who', 'why', 'win', 'won', 'yes', 'yet', 'you',
+    # 4-letter
+    'able', 'also', 'back', 'ball', 'bank', 'been', 'best', 'bill', 'body',
+    'book', 'both', 'call', 'came', 'come', 'cool', 'city', 'dark', 'data',
+    'deal', 'does', 'done', 'door', 'down', 'each', 'east', 'easy', 'else',
+    'even', 'ever', 'face', 'fact', 'fall', 'feel', 'find', 'fire', 'food',
+    'four', 'free', 'from', 'full', 'game', 'gave', 'girl', 'give', 'glad',
+    'goes', 'gone', 'good', 'great', 'grow', 'hair', 'half', 'hand', 'hard',
+    'have', 'head', 'hear', 'help', 'here', 'high', 'hold', 'home', 'hope',
+    'hour', 'idea', 'into', 'just', 'keep', 'kind', 'knew', 'know', 'land',
+    'last', 'late', 'left', 'less', 'life', 'like', 'line', 'live', 'long',
+    'look', 'love', 'made', 'main', 'make', 'many', 'meet', 'mind', 'more',
+    'most', 'move', 'much', 'must', 'name', 'near', 'need', 'next', 'nice',
+    'none', 'once', 'only', 'open', 'over', 'paid', 'part', 'pass', 'past',
+    'pick', 'plan', 'play', 'read', 'real', 'rest', 'right', 'road', 'room',
+    'safe', 'said', 'same', 'save', 'seen', 'self', 'send', 'show', 'side',
+    'sign', 'size', 'some', 'soon', 'stay', 'stop', 'such', 'sure', 'take',
+    'talk', 'tell', 'text', 'than', 'that', 'them', 'then', 'they', 'this',
+    'thus', 'time', 'told', 'took', 'tree', 'true', 'turn', 'type', 'upon',
+    'used', 'user', 'very', 'view', 'wait', 'walk', 'wall', 'want', 'week',
+    'well', 'went', 'were', 'west', 'what', 'when', 'will', 'with', 'word',
+    'work', 'year', 'your',
+    # 5-letter
+    'about', 'above', 'after', 'again', 'being', 'below', 'black', 'bring',
+    'bring', 'cause', 'child', 'clear', 'close', 'could', 'doing', 'early',
+    'every', 'field', 'first', 'found', 'front', 'given', 'going', 'great',
+    'green', 'group', 'happy', 'heard', 'heart', 'hello', 'house', 'human',
+    'known', 'large', 'later', 'learn', 'leave', 'level', 'light', 'little',
+    'local', 'might', 'money', 'month', 'never', 'night', 'often', 'order',
+    'other', 'party', 'peace', 'place', 'plant', 'point', 'power', 'press',
+    'quite', 'ready', 'right', 'river', 'round', 'seems', 'shall', 'short',
+    'shown', 'since', 'small', 'sorry', 'sound', 'south', 'space', 'start',
+    'state', 'still', 'study', 'table', 'taken', 'thank', 'thanks', 'their',
+    'there', 'these', 'thing', 'think', 'third', 'those', 'three', 'today',
+    'under', 'until', 'using', 'value', 'voice', 'watch', 'water', 'white',
+    'whole', 'woman', 'women', 'world', 'would', 'write', 'wrong', 'young',
+    # 6+ letter common words
+    'always', 'around', 'become', 'before', 'better', 'called', 'change',
+    'coming', 'enough', 'family', 'friend', 'having', 'itself', 'little',
+    'making', 'matter', 'minute', 'moment', 'mother', 'number', 'people',
+    'person', 'please', 'rather', 'really', 'reason', 'school', 'should',
+    'simple', 'social', 'system', 'things', 'though', 'together', 'toward',
+    'wanted', 'without', 'working', 'because', 'between', 'brought', 'country',
+    'during', 'example', 'father', 'general', 'getting', 'government', 'however',
+    'looking', 'morning', 'nothing', 'problem', 'program', 'several', 'something',
+    'special', 'started', 'through', 'understand', 'whether', 'another',
+}
+
+# Build index by length and first letter for faster lookup
+_WORDS_BY_LEN: dict[int, set[str]] = {}
+for _w in COMMON_WORDS:
+    _WORDS_BY_LEN.setdefault(len(_w), set()).add(_w)
+
+
+def _levenshtein(s1: str, s2: str) -> int:
+    """Compute Levenshtein edit distance between two strings."""
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+    if not s2:
+        return len(s1)
+    prev_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = prev_row[j + 1] + 1
+            deletions = curr_row[j] + 1
+            substitutions = prev_row[j] + (c1 != c2)
+            curr_row.append(min(insertions, deletions, substitutions))
+        prev_row = curr_row
+    return prev_row[-1]
+
+
+def _match_word(raw: str, max_distance: int = 2) -> str:
+    """
+    Find the best matching English word for a raw ASL letter sequence.
+    
+    Uses Levenshtein distance to find close matches within the allowed distance.
+    Returns the original raw string if no good match is found.
+    """
+    raw_lower = raw.lower()
+    raw_len = len(raw_lower)
+    
+    # If raw is already a word, return it
+    if raw_lower in COMMON_WORDS:
+        return raw_lower
+    
+    best_match = None
+    best_dist = max_distance + 1
+    
+    # Search words of similar length (±max_distance)
+    for length in range(max(1, raw_len - max_distance), raw_len + max_distance + 1):
+        candidates = _WORDS_BY_LEN.get(length, set())
+        for word in candidates:
+            dist = _levenshtein(raw_lower, word)
+            if dist < best_dist:
+                best_dist = dist
+                best_match = word
+            if dist == 0:
+                return word
+    
+    if best_match and best_dist <= max_distance:
+        return best_match
+    
+    return raw
+
+
 def generate_corrected_log(
     detections_path: Path = DETECTIONS_LOG,
     compacted_path: Path | None = None,
@@ -307,29 +360,19 @@ def generate_corrected_log(
 ):
     compacted = compact_detection_ranges(detections_path, compacted_path)
     word_entries = _extract_words_from_compacted(compacted)
-    eleven_key = _read_api_key(ELEVEN_KEY_PATH)
-    gemini_key = _read_api_key(GEMINI_KEY_PATH)
     corrected = []
 
-    for idx, word in enumerate(word_entries):
+    for word in word_entries:
         raw = word.get('raw', '')
         if not raw:
             continue
-        prev_word = word_entries[idx - 1]['raw'] if idx > 0 else ''
-        next_word = word_entries[idx + 1]['raw'] if idx + 1 < len(word_entries) else ''
-        context = f"prev={prev_word} next={next_word}".strip()
-
-        gemini_word = _gemini_correct_word(raw, context, gemini_key)
-        eleven_word = _elevenlabs_correct_word(raw, context, eleven_key)
-
-        if gemini_word and eleven_word and gemini_word.lower() == eleven_word.lower():
-            chosen = gemini_word
-        else:
-            chosen = gemini_word or eleven_word or raw
+        
+        # Match the raw letter sequence to the closest English word
+        matched = _match_word(raw)
 
         corrected.append({
             'frame': word['frameRange'],
-            'string': chosen,
+            'string': matched,
         })
 
     try:
@@ -582,41 +625,165 @@ def logs_corrected():
     return jsonify(corrected), 200
 
 
-@app.route('/tts', methods=['POST'])
-def tts():
-    payload = request.get_json(silent=True) or {}
-    text = (payload.get('text') or '').strip()
-    if not text:
-        return jsonify({'error': 'text is required'}), 400
-
-    api_key = _read_api_key(ELEVEN_KEY_PATH)
-    if not api_key:
-        return jsonify({'error': 'API key not found'}), 500
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
-    body = {
-        "text": text,
-        "model_id": payload.get('model_id', 'eleven_monolingual_v1'),
-        "voice_settings": payload.get('voice_settings', {
-            "stability": 0.5,
-            "similarity_boost": 0.8,
-        }),
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "xi-api-key": api_key,
-        "Accept": "audio/mpeg",
-    }
-
+@app.route('/detections/load', methods=['POST'])
+def detections_load():
+    """Load detection data from JSON payload (for demo/testing)."""
     try:
-        data = json.dumps(body).encode('utf-8')
-        req = urlrequest.Request(url, data=data, headers=headers)
-        with urlrequest.urlopen(req, timeout=20) as resp:
-            audio_bytes = resp.read()
-        return Response(audio_bytes, mimetype='audio/mpeg')
+        data = request.get_json(silent=True)
+        if not isinstance(data, list):
+            return jsonify({'error': 'Expected a JSON array'}), 400
+
+        # Clear the buffer and load new data
+        with _buffer_lock:
+            _detections_buffer.clear()
+            for entry in data:
+                _detections_buffer.append(entry)
+            _write_detections()
+
+        return jsonify({'status': 'ok', 'loaded': len(data)}), 200
     except Exception as e:
-        return jsonify({'error': f'TTS failed: {e}'}), 502
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/detections/clear', methods=['POST'])
+def detections_clear():
+    """Clear all detection data."""
+    try:
+        with _buffer_lock:
+            _detections_buffer.clear()
+            _write_detections()
+
+        # Also clear the compacted and corrected logs
+        try:
+            compacted_path = DETECTIONS_LOG.parent / 'compactedLog.json'
+            compacted_path.write_text('[]\n', encoding='utf-8')
+        except Exception:
+            pass
+
+        try:
+            CORRECTED_LOG.write_text('[]\n', encoding='utf-8')
+        except Exception:
+            pass
+
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/video/process', methods=['POST'])
+def video_process():
+    """
+    Process an uploaded MP4 video file frame by frame using YOLO detection.
+    Generates detections.json, compactedLog.json, and CorrectedLog.json.
+    """
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file in request'}), 400
+
+    video_file = request.files['file']
+    if not video_file.filename:
+        return jsonify({'error': 'No file selected'}), 400
+
+    if model is None:
+        return jsonify({'error': 'YOLO model not loaded. Check weights path.'}), 500
+
+    # Save uploaded video to a temp file
+    import tempfile
+    temp_video = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+    try:
+        video_file.save(temp_video.name)
+        temp_video.close()
+
+        # Open video with OpenCV
+        cap = cv2.VideoCapture(temp_video.name)
+        if not cap.isOpened():
+            return jsonify({'error': 'Failed to open video file'}), 400
+
+        # Clear existing detections
+        with _buffer_lock:
+            _detections_buffer.clear()
+
+        frame_idx = 0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        processed = 0
+
+        while True:
+            ret, frame_bgr = cap.read()
+            if not ret:
+                break
+
+            frame_idx += 1
+
+            # Run YOLO detection
+            try:
+                results = model.predict(
+                    source=frame_bgr,
+                    conf=CONF_THRESH,
+                    iou=IOU_THRESH,
+                    max_det=MAX_DET,
+                    verbose=False,
+                )
+
+                entry = None
+                if results and results[0].boxes is not None and len(results[0].boxes) > 0:
+                    result = results[0]
+                    confs = result.boxes.conf
+                    best_idx = int(confs.argmax().item())
+                    best_conf = float(confs[best_idx].item())
+                    best_cls = int(result.boxes.cls[best_idx].item())
+                    label = result.names.get(best_cls, str(best_cls))
+                    entry = {
+                        'frame_count': frame_idx,
+                        'timestamp': None,
+                        'label': label,
+                        'confidence': best_conf,
+                        'frame_path': f'video_frame_{frame_idx:05d}',
+                    }
+                elif LOG_EMPTY:
+                    entry = {
+                        'frame_count': frame_idx,
+                        'timestamp': None,
+                        'label': 'none',
+                        'confidence': 0.0,
+                        'frame_path': f'video_frame_{frame_idx:05d}',
+                    }
+
+                if entry:
+                    with _buffer_lock:
+                        _detections_buffer.append(entry)
+                    processed += 1
+
+            except Exception as e:
+                print(f'WARNING: Detection failed on frame {frame_idx}: {e}')
+                continue
+
+        cap.release()
+
+        # Write detections to file
+        with _buffer_lock:
+            _write_detections()
+
+        # Generate compacted and corrected logs
+        compacted = compact_detection_ranges(DETECTIONS_LOG)
+        corrected = generate_corrected_log(DETECTIONS_LOG)
+
+        return jsonify({
+            'status': 'ok',
+            'total_frames': total_frames,
+            'processed': processed,
+            'detections': len(list(_detections_buffer)),
+            'words': len(corrected) if corrected else 0,
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        # Clean up temp file
+        try:
+            Path(temp_video.name).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 @app.route('/frames/annotate', methods=['POST'])

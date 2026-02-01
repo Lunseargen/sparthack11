@@ -99,27 +99,19 @@ class VideoCaptureManager {
     }
 
     async refreshLogs() {
-        const [compacted, corrected, raw] = await Promise.all([
-            this.fetchJson(`${this.backendBaseUrl}/logs/compacted`),
-            this.fetchJson(`${this.backendBaseUrl}/logs/corrected`),
-            this.fetchJson(`${this.backendBaseUrl}/logs/raw`)
-        ]);
+        const utils = window.DetectionUtils;
+        if (!utils) return;
 
-        if (raw && this.textbox1) {
-            if (Array.isArray(raw)) {
-                this.textbox1.value = raw.map(item => item.label || item).filter(Boolean).join('');
-            } else if (typeof raw === 'object' && raw.labels) {
-                this.textbox1.value = raw.labels;
-            }
-        }
+        const logs = utils.getLogs();
+        if (this.textbox1) this.textbox1.value = logs.rawLabels || '';
 
-        if (Array.isArray(compacted) && this.textbox2) {
-            const labels = compacted.map(item => item.label).filter(Boolean).join('');
+        if (Array.isArray(logs.compacted) && this.textbox2) {
+            const labels = logs.compacted.map(item => item.label).filter(Boolean).join('');
             this.textbox2.value = labels;
         }
 
-        if (Array.isArray(corrected) && this.textbox3) {
-            const words = corrected.map(item => item.string).filter(Boolean).join(' ');
+        if (Array.isArray(logs.corrected) && this.textbox3) {
+            const words = logs.corrected.map(item => item.string).filter(Boolean).join(' ');
             this.textbox3.value = words;
         }
     }
@@ -147,19 +139,10 @@ class VideoCaptureManager {
                 throw new Error('Invalid format: expected an array of detection entries');
             }
 
-            // Send the data to the server to replace detections.json
-            const res = await fetch(`${this.backendBaseUrl}/detections/load`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
+            const utils = window.DetectionUtils;
+            if (!utils) throw new Error('Detection utilities not available');
 
-            if (!res.ok) {
-                const errText = await res.text();
-                throw new Error(errText || 'Failed to load demo data');
-            }
-
-            // Refresh logs to update textboxes
+            utils.saveDetections(data);
             await this.refreshLogs();
             this.updateStatus(`Demo data loaded: ${data.length} entries`, 'success');
         } catch (err) {
@@ -173,14 +156,10 @@ class VideoCaptureManager {
     async clearDetectionData() {
         this.updateStatus('Clearing detection data...', 'recording');
         try {
-            const res = await fetch(`${this.backendBaseUrl}/detections/clear`, {
-                method: 'POST'
-            });
+            const utils = window.DetectionUtils;
+            if (!utils) throw new Error('Detection utilities not available');
 
-            if (!res.ok) {
-                const errText = await res.text();
-                throw new Error(errText || 'Failed to clear data');
-            }
+            utils.clearDetections();
 
             // Clear textboxes
             if (this.textbox1) this.textbox1.value = '';
@@ -193,19 +172,7 @@ class VideoCaptureManager {
         }
     }
 
-    async fetchJson(url) {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 2000);
-        try {
-            const res = await fetch(url, { signal: controller.signal });
-            if (!res.ok) return null;
-            return await res.json();
-        } catch (err) {
-            return null;
-        } finally {
-            clearTimeout(timeout);
-        }
-    }
+    
     
     async startRecording() {
         try {
@@ -396,7 +363,7 @@ class VideoCaptureManager {
             const formData = new FormData();
             formData.append('frame', blob, 'frame.jpg');
             
-            fetch('http://localhost:5000/send-frame', {
+            fetch(`${this.backendBaseUrl}/send-frame`, {
                 method: 'POST',
                 body: formData
             }).then(response => {
@@ -451,23 +418,13 @@ class VideoCaptureManager {
                 return;
             }
 
-            const res = await fetch(`${this.backendBaseUrl}/tts`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text })
-            });
-
-            if (!res.ok) {
-                const errText = await res.text();
-                throw new Error(errText || 'TTS request failed');
+            if (!('speechSynthesis' in window)) {
+                throw new Error('Speech synthesis not supported in this browser');
             }
 
-            const audioBlob = await res.blob();
-            const audioUrl = URL.createObjectURL(audioBlob);
-            const audio = new Audio(audioUrl);
-            audio.play().finally(() => {
-                audio.onended = () => URL.revokeObjectURL(audioUrl);
-            });
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            window.speechSynthesis.speak(utterance);
         } catch (err) {
             this.updateStatus('Error: ' + err.message, 'error');
         }

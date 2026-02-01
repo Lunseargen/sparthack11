@@ -16,6 +16,7 @@ class FileManager {
         this.annotateStatus = document.getElementById('annotateStatus');
         this.downloadAnnotatedBtn = document.getElementById('downloadAnnotatedBtn');
         this.backendBaseUrl = this.getBackendBaseUrl();
+        this.annotatedFrames = [];
         
         this.selectedFile = null;
         // Backend removed: file listing disabled
@@ -335,19 +336,102 @@ class FileManager {
         this.annotateStatus.className = 'status ' + type;
     }
 
+    async loadFramesFromIndexedDB() {
+        if (!('indexedDB' in window)) return [];
+
+        return new Promise((resolve) => {
+            const request = indexedDB.open('FrameDB', 1);
+
+            request.onerror = () => resolve([]);
+            request.onsuccess = () => {
+                try {
+                    const db = request.result;
+                    const transaction = db.transaction(['frames'], 'readonly');
+                    const store = transaction.objectStore('frames');
+                    const getAllRequest = store.getAll();
+                    getAllRequest.onsuccess = () => resolve(getAllRequest.result || []);
+                    getAllRequest.onerror = () => resolve([]);
+                } catch (err) {
+                    resolve([]);
+                }
+            };
+        });
+    }
+
+    async annotateFrameBlob(blob, label) {
+        const image = await createImageBitmap(blob);
+        const canvas = document.createElement('canvas');
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(image, 0, 0);
+
+        const fontScale = Math.max(0.6, Math.min(1.2, canvas.width / 800));
+        const fontSize = Math.round(24 * fontScale);
+        ctx.font = `${fontSize}px Arial`;
+        ctx.fillStyle = '#00ff00';
+        ctx.strokeStyle = '#003300';
+        ctx.lineWidth = 2;
+        const margin = 20;
+        const x = margin;
+        const y = canvas.height - margin;
+        ctx.strokeText(label, x, y);
+        ctx.fillText(label, x, y);
+
+        return new Promise((resolve) => {
+            canvas.toBlob((outBlob) => resolve(outBlob), 'image/jpeg', 0.9);
+        });
+    }
+
     async annotateFrames() {
         this.showAnnotateStatus('Applying corrected labels...', 'uploading');
         try {
-            const res = await fetch(`${this.backendBaseUrl}/frames/annotate`, {
-                method: 'POST'
-            });
-            if (!res.ok) {
-                const text = await res.text();
-                throw new Error(text || 'Annotation failed');
+            const utils = window.DetectionUtils;
+            if (!utils) throw new Error('Detection utilities not available');
+
+            const corrected = utils.getCorrectedLog();
+            if (!Array.isArray(corrected) || corrected.length === 0) {
+                throw new Error('No corrected log entries available');
             }
-            const payload = await res.json();
-            const count = payload && payload.annotated ? payload.annotated : 0;
-            this.showAnnotateStatus(`Annotated ${count} frames.`, 'success');
+
+            const frames = await this.loadFramesFromIndexedDB();
+            if (!frames.length) {
+                throw new Error('No frames available in local storage');
+            }
+
+            const frameIndex = new Map();
+            frames.forEach((entry) => {
+                if (entry && Number.isFinite(entry.frameNumber)) {
+                    frameIndex.set(entry.frameNumber, entry.frame);
+                }
+            });
+
+            const annotated = [];
+            for (const entry of corrected) {
+                const range = entry.frame || entry.frameRange;
+                const label = entry.string || entry.label;
+                if (!range || !label) continue;
+
+                const [startStr, endStr] = range.split('-', 2);
+                const start = parseInt(startStr, 10);
+                const end = parseInt(endStr, 10);
+                if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+
+                for (let frameNum = start; frameNum <= end; frameNum++) {
+                    const blob = frameIndex.get(frameNum);
+                    if (!blob) continue;
+                    const annotatedBlob = await this.annotateFrameBlob(blob, label);
+                    if (annotatedBlob) {
+                        annotated.push({
+                            name: `frame_${String(frameNum).padStart(5, '0')}.jpg`,
+                            blob: annotatedBlob
+                        });
+                    }
+                }
+            }
+
+            this.annotatedFrames = annotated;
+            this.showAnnotateStatus(`Annotated ${annotated.length} frames.`, 'success');
         } catch (err) {
             this.showAnnotateStatus('Annotation error: ' + err.message, 'error');
         }
@@ -356,12 +440,21 @@ class FileManager {
     async downloadAnnotatedFrames() {
         this.showAnnotateStatus('Preparing download...', 'uploading');
         try {
-            const res = await fetch(`${this.backendBaseUrl}/frames/annotated-zip`);
-            if (!res.ok) {
-                const text = await res.text();
-                throw new Error(text || 'Download failed');
+            if (!window.JSZip) {
+                throw new Error('JSZip not available');
             }
-            const blob = await res.blob();
+            if (!this.annotatedFrames || this.annotatedFrames.length === 0) {
+                throw new Error('No annotated frames available. Run annotation first.');
+            }
+
+            const zip = new window.JSZip();
+            this.annotatedFrames.forEach((item) => {
+                if (item?.name && item?.blob) {
+                    zip.file(item.name, item.blob);
+                }
+            });
+
+            const blob = await zip.generateAsync({ type: 'blob' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -382,34 +475,12 @@ class FileManager {
             return;
         }
 
-        const formData = new FormData();
-        formData.append('file', this.selectedFile);
-
         if (this.processVideoBtn) this.processVideoBtn.disabled = true;
-        this.showStatus('Processing video with YOLO detection... This may take a while.', 'uploading');
+        this.showStatus('Video processing is unavailable in browser-only mode.', 'error');
 
-        try {
-            const res = await fetch(`${this.backendBaseUrl}/video/process`, {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!res.ok) {
-                const text = await res.text();
-                throw new Error(text || 'Processing failed');
-            }
-
-            const result = await res.json();
-            const msg = `Processed ${result.total_frames} frames. ` +
-                        `Detections: ${result.detections}, Words: ${result.words}`;
-            this.showStatus(msg, 'success');
-        } catch (err) {
-            this.showStatus('Processing error: ' + err.message, 'error');
-        } finally {
-            if (this.processVideoBtn && this.selectedFile) {
-                this.processVideoBtn.disabled = false;
-            }
-        }
+        setTimeout(() => {
+            if (this.processVideoBtn) this.processVideoBtn.disabled = false;
+        }, 1000);
     }
 }
 

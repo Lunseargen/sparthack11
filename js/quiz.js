@@ -14,6 +14,7 @@ class QuizManager {
         this.scoreBox = document.getElementById('scoreBox');
         this.checkboxGrid = document.getElementById('checkboxGrid');
         this.status = document.getElementById('status');
+        this.backendBaseUrl = this.getBackendBaseUrl();
         
         this.isQuizActive = false;
         this.selectedCharacters = [];
@@ -140,6 +141,15 @@ class QuizManager {
             checkboxItem.appendChild(label);
             this.checkboxGrid.appendChild(checkboxItem);
         });
+    }
+
+    getBackendBaseUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const override = params.get('backend');
+        if (override) return override.replace(/\/$/, '');
+        const stored = window.localStorage.getItem('backendUrl');
+        if (stored) return stored.replace(/\/$/, '');
+        return 'http://localhost:5000';
     }
     
     initEventListeners() {
@@ -450,9 +460,9 @@ class QuizManager {
             const formData = new FormData();
             formData.append('frame', blob, 'frame.jpg');
             
-            console.log('📤 Sending frame to MJPEG server (pending:', this.pendingFrameUploads, ')');
+            console.log('📤 Sending frame to server (pending:', this.pendingFrameUploads, ')');
             
-            const response = await fetch('http://localhost:5000/send-mjpeg', {
+            const response = await fetch(`${this.backendBaseUrl}/send-frame`, {
                 method: 'POST',
                 body: formData,
                 signal: AbortSignal.timeout(5000) // 5 second timeout
@@ -462,7 +472,7 @@ class QuizManager {
                 console.warn('⚠️ Frame upload returned status:', response.status);
                 this.storeFrameLocally(blob);
             } else {
-                console.log('✅ Frame queued for MJPEG stream');
+                console.log('✅ Frame queued for server');
             }
         } catch (err) {
             console.error('❌ Fetch error (server may not be running):', err.message);

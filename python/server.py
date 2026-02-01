@@ -18,7 +18,7 @@ if not os.path.exists(FRAMES_DIR):
     os.makedirs(FRAMES_DIR)
 
 # MJPEG stream deque - automatically drops oldest frames when new ones exceed max size
-MAX_QUEUE_SIZE = 250
+MAX_QUEUE_SIZE = 300
 frame_queue = deque(maxlen=MAX_QUEUE_SIZE)
 frame_lock = threading.Lock()
 
@@ -48,8 +48,10 @@ def receive_mjpeg_frame():
             return jsonify({'status': 'error', 'message': f'Invalid image data: {str(e)}'}), 400
         
         # Add to queue for MJPEG stream
-        # deque with maxlen automatically drops oldest frames when limit exceeded
+        # Clear queue when it reaches max size, then add new frame
         with frame_lock:
+            if len(frame_queue) >= MAX_QUEUE_SIZE:
+                frame_queue.clear()
             frame_queue.append((frame, frame_data))
         
         # Return success (no disk saving)
@@ -66,9 +68,7 @@ def stream_mjpeg():
             try:
                 with frame_lock:
                     if frame_queue:
-                        frame, frame_data = frame_queue[0]  # Get oldest frame
-                        # Manually remove after reading to prevent rapid re-reading
-                        frame_queue.popleft()
+                        frame, frame_data = frame_queue[0]  # Get first frame (oldest/being overwritten)
                     else:
                         continue
                 
@@ -91,7 +91,7 @@ def health():
     return jsonify({'status': 'ok', 'queue_size': queue_size, 'max_size': MAX_QUEUE_SIZE}), 200
 
 if __name__ == '__main__':
-    max_queue_size = 250
+    max_queue_size = 300
     queue_memory_mb = (max_queue_size * 150) / 1024  # ~150KB per frame average
     
     print("=" * 50)

@@ -20,8 +20,11 @@ frame_count = 0
 @app.before_request
 def log_request():
     """Log all incoming requests"""
-    if request.method == 'POST':
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] {request.method} {request.path} - Files: {list(request.files.keys())}")
+    try:
+        if request.method == 'POST':
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {request.method} {request.path} - Files: {list(request.files.keys())}")
+    except Exception as e:
+        print(f"Error logging request: {e}")
 
 @app.route('/send-frame', methods=['POST', 'OPTIONS'])
 def receive_frame():
@@ -40,15 +43,10 @@ def receive_frame():
         
         frame_file = request.files['frame']
         
-        if frame_file.filename == '':
-            error_msg = 'Empty filename'
-            print(f"ERROR: {error_msg}")
-            return jsonify({'status': 'error', 'message': error_msg}), 400
-        
-        # Read frame data
+        # Read frame data (don't check for empty filename - blobs may not have one)
         frame_data = frame_file.read()
         
-        if not frame_data:
+        if not frame_data or len(frame_data) == 0:
             error_msg = 'Empty frame data'
             print(f"ERROR: {error_msg}")
             return jsonify({'status': 'error', 'message': error_msg}), 400
@@ -89,5 +87,10 @@ if __name__ == '__main__':
     print("Waiting for frames from web browser...")
     print("Press Ctrl+C to stop")
     print("=" * 50)
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
-
+    try:
+        app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False, threaded=True)
+    except Exception as e:
+        print(f"Server error: {e}")
+        print("Server will continue running if possible...")
+        import traceback
+        traceback.print_exc()

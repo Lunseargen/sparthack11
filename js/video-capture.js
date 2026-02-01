@@ -24,10 +24,22 @@ class VideoCaptureManager {
     }
     
     initEventListeners() {
-        this.startBtn.addEventListener('click', () => this.startRecording());
-        this.stopBtn.addEventListener('click', () => this.stopRecording());
-        this.captureFrameBtn.addEventListener('click', () => this.captureFrame());
-        this.speakerBtn.addEventListener('click', () => this.playAudio());
+        this.startBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.startRecording();
+        });
+        this.stopBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.stopRecording();
+        });
+        this.captureFrameBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.captureFrame();
+        });
+        this.speakerBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.playAudio();
+        });
     }
     
     async startRecording() {
@@ -87,15 +99,23 @@ class VideoCaptureManager {
     
     startFrameCapture() {
         const captureLoop = () => {
-            if (!this.isRecording) return;
-            
-            if (this.frameCount < this.maxFrames) {
-                this.captureFrameToServer();
-                this.frameCount++;
-                this.updateStatus(`Recording... ${this.frameCount}/${this.maxFrames} frames captured. Textbox 1: ${this.textbox1.value.substring(0, 20)}...`, 'recording');
+            try {
+                if (!this.isRecording) return;
+                
+                if (this.frameCount < this.maxFrames) {
+                    this.captureFrameToServer();
+                    this.frameCount++;
+                    this.updateStatus(`Recording... ${this.frameCount}/${this.maxFrames} frames captured. Textbox 1: ${this.textbox1.value.substring(0, 20)}...`, 'recording');
+                }
+                
+                setTimeout(captureLoop, 33); // ~30fps
+            } catch (err) {
+                console.error('Frame capture loop error:', err);
+                // Continue capture even if there's an error
+                if (this.isRecording) {
+                    setTimeout(captureLoop, 33);
+                }
             }
-            
-            setTimeout(captureLoop, 33); // ~30fps
         };
         
         captureLoop();
@@ -107,41 +127,67 @@ class VideoCaptureManager {
             return;
         }
         
-        this.canvas.width = this.videoElement.videoWidth;
-        this.canvas.height = this.videoElement.videoHeight;
-        this.canvasContext.drawImage(this.videoElement, 0, 0);
-        
-        this.canvas.toBlob((blob) => {
-            this.sendFrameToServer(blob);
-            this.updateStatus('Frame captured and saved!', 'success');
-        }, 'image/jpeg', 0.9);
+        try {
+            this.canvas.width = this.videoElement.videoWidth;
+            this.canvas.height = this.videoElement.videoHeight;
+            this.canvasContext.drawImage(this.videoElement, 0, 0);
+            
+            this.canvas.toBlob((blob) => {
+                if (blob) {
+                    this.sendFrameToServer(blob);
+                    this.updateStatus('Frame captured and saved!', 'success');
+                }
+            }, 'image/jpeg', 0.9);
+        } catch (err) {
+            console.error('Error capturing frame:', err);
+            this.updateStatus('Error capturing frame: ' + err.message, 'error');
+        }
     }
     
     captureFrameToServer() {
         if (!this.videoElement.srcObject) return;
         
-        this.canvas.width = this.videoElement.videoWidth;
-        this.canvas.height = this.videoElement.videoHeight;
-        this.canvasContext.drawImage(this.videoElement, 0, 0);
-        
-        this.canvas.toBlob((blob) => {
-            this.sendFrameToServer(blob);
-        }, 'image/jpeg', 0.8);
+        try {
+            this.canvas.width = this.videoElement.videoWidth;
+            this.canvas.height = this.videoElement.videoHeight;
+            
+            if (this.canvas.width === 0 || this.canvas.height === 0) {
+                // Video stream not ready yet
+                return;
+            }
+            
+            this.canvasContext.drawImage(this.videoElement, 0, 0);
+            
+            this.canvas.toBlob((blob) => {
+                if (blob && this.isRecording) {
+                    this.sendFrameToServer(blob);
+                }
+            }, 'image/jpeg', 0.8);
+        } catch (err) {
+            console.error('Error capturing frame:', err);
+        }
     }
     
     async sendFrameToServer(blob) {
+        if (!blob || blob.size === 0) return;
+        
         try {
             const formData = new FormData();
-            formData.append('frame', blob);
+            formData.append('frame', blob, 'frame.jpg');
             
             fetch('http://localhost:5000/send-frame', {
                 method: 'POST',
                 body: formData
+            }).then(response => {
+                if (!response.ok) {
+                    console.warn('Frame upload returned status:', response.status);
+                }
             }).catch(err => {
                 // Silently fallback to local storage
                 this.storeFrameLocally(blob);
             });
         } catch (err) {
+            console.error('Error sending frame:', err);
             this.storeFrameLocally(blob);
         }
     }

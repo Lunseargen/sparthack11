@@ -27,7 +27,7 @@ conda install -n hack -y flask opencv pillow numpy
 if [ $? -eq 0 ]; then
     echo "✓ All packages installed successfully!"
     echo "To activate: conda activate hack"
-    echo "To start the server, run: python python/camera.py"
+    echo "To start the server, run: ./run_server.sh"
 else
     echo "✗ Error installing packages"
     exit 1

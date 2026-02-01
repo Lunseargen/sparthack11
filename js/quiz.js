@@ -7,6 +7,8 @@ class QuizManager {
         this.startBtn = document.getElementById('startQuizBtn');
         this.stopBtn = document.getElementById('stopQuizBtn');
         this.nextBtn = document.getElementById('nextBtn');
+        this.selectAllBtn = document.getElementById('selectAllBtn');
+        this.clearAllBtn = document.getElementById('clearAllBtn');
         this.charBox = document.getElementById('charBox');
         this.detBox = document.getElementById('detBox');
         this.scoreBox = document.getElementById('scoreBox');
@@ -24,9 +26,37 @@ class QuizManager {
         this.canvas = document.createElement('canvas');
         this.canvasContext = this.canvas.getContext('2d');
         
+        // Request throttling to prevent memory buildup
+        this.pendingFrameUploads = 0;
+        this.maxPendingFrames = 3; // Only allow 3 concurrent frame uploads
+        
         this.initCheckboxes();
         this.initEventListeners();
         this.loadQuestions();
+        
+        // Add window error listener to catch uncaught errors
+        window.addEventListener('error', (e) => {
+            console.error('Uncaught error:', e.error);
+            try {
+                this.updateStatus('Error: ' + (e.error?.message || e.message || 'Unknown error'), 'error');
+            } catch (err) {
+                console.error('Failed to update status on error:', err);
+            }
+            // Prevent default error behavior (page reload)
+            e.preventDefault();
+        });
+        
+        // Add unhandled promise rejection listener
+        window.addEventListener('unhandledrejection', (e) => {
+            console.error('Unhandled promise rejection:', e.reason);
+            try {
+                this.updateStatus('Promise error: ' + (e.reason?.message || e.reason || 'Unknown'), 'error');
+            } catch (err) {
+                console.error('Failed to update status on promise error:', err);
+            }
+            // Prevent default rejection behavior
+            e.preventDefault();
+        });
     }
     
     initCheckboxes() {
@@ -60,9 +90,53 @@ class QuizManager {
     }
     
     initEventListeners() {
-        this.startBtn.addEventListener('click', () => this.startQuiz());
-        this.stopBtn.addEventListener('click', () => this.stopQuiz());
-        this.nextBtn.addEventListener('click', () => this.nextQuestion());
+        this.startBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.startQuiz();
+        });
+        this.stopBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.stopQuiz();
+        });
+        this.nextBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.nextQuestion();
+        });
+        this.selectAllBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.selectAllCharacters();
+        });
+        this.clearAllBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.clearAllCharacters();
+        });
+    }
+    
+    selectAllCharacters() {
+        try {
+            document.querySelectorAll('#checkboxGrid input[type="checkbox"]').forEach(cb => {
+                if (!cb.checked) {
+                    cb.checked = true;
+                    const char = cb.value;
+                    if (!this.selectedCharacters.includes(char)) {
+                        this.selectedCharacters.push(char);
+                    }
+                }
+            });
+        } catch (err) {
+            console.error('Error selecting all characters:', err);
+        }
+    }
+    
+    clearAllCharacters() {
+        try {
+            document.querySelectorAll('#checkboxGrid input[type="checkbox"]').forEach(cb => {
+                cb.checked = false;
+            });
+            this.selectedCharacters = [];
+        } catch (err) {
+            console.error('Error clearing characters:', err);
+        }
     }
     
     loadQuestions() {
@@ -78,11 +152,15 @@ class QuizManager {
     
     async startQuiz() {
         try {
+            console.log('Starting quiz...');
+            this.updateStatus('Requesting camera access...', 'info');
+            
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { width: { ideal: 1280 }, height: { ideal: 720 } },
                 audio: false
             });
             
+            console.log('Camera stream obtained');
             this.videoElement.srcObject = stream;
             
             this.isQuizActive = true;
@@ -95,70 +173,87 @@ class QuizManager {
             this.stopBtn.disabled = false;
             this.nextBtn.disabled = false;
             
+            console.log('Quiz state initialized, loading question...');
             this.loadQuestion(0);
+            
+            console.log('Starting frame capture...');
             this.startFrameCapture();
+            
             this.updateStatus('Quiz started!', 'info');
+            console.log('Quiz started successfully');
             
         } catch (err) {
+            console.error('Error starting quiz:', err);
             this.updateStatus('Error accessing camera: ' + err.message, 'error');
-            console.error('Error:', err);
         }
     }
     
     stopQuiz() {
-        this.isQuizActive = false;
-        
-        if (this.videoElement.srcObject) {
-            this.videoElement.srcObject.getTracks().forEach(track => track.stop());
+        try {
+            this.isQuizActive = false;
+            
+            if (this.videoElement.srcObject) {
+                this.videoElement.srcObject.getTracks().forEach(track => track.stop());
+            }
+            
+            this.startBtn.disabled = false;
+            this.stopBtn.disabled = true;
+            this.nextBtn.disabled = true;
+            
+            this.updateStatus(`Quiz completed! Final Score: ${this.correctAnswers}/${this.totalAnswers}`, 'success');
+        } catch (err) {
+            console.error('Error stopping quiz:', err);
         }
-        
-        this.startBtn.disabled = false;
-        this.stopBtn.disabled = true;
-        this.nextBtn.disabled = true;
-        
-        this.updateStatus(`Quiz completed! Final Score: ${this.correctAnswers}/${this.totalAnswers}`, 'success');
     }
     
     loadQuestion(index) {
-        if (index >= this.questions.length) {
-            this.stopQuiz();
-            return;
+        try {
+            if (index >= this.questions.length) {
+                this.stopQuiz();
+                return;
+            }
+            
+            const question = this.questions[index];
+            this.currentQuestionIndex = index;
+            
+            // Reset character selection
+            this.selectedCharacters = [];
+            document.querySelectorAll('#checkboxGrid input[type="checkbox"]').forEach(cb => {
+                cb.checked = false;
+            });
+            
+            this.charBox.textContent = String.fromCharCode(65 + index); // A, B, C...
+            this.updateScore();
+        } catch (err) {
+            console.error('Error loading question:', err);
         }
-        
-        const question = this.questions[index];
-        this.currentQuestionIndex = index;
-        
-        // Reset character selection
-        this.selectedCharacters = [];
-        document.querySelectorAll('#checkboxGrid input[type="checkbox"]').forEach(cb => {
-            cb.checked = false;
-        });
-        
-        this.charBox.textContent = String.fromCharCode(65 + index); // A, B, C...
-        this.updateScore();
     }
     
     nextQuestion() {
-        if (this.currentQuestionIndex >= this.questions.length) {
-            this.updateStatus('Quiz completed!', 'success');
-            return;
-        }
-        
-        // Check if answer was correct
-        const currentQuestion = this.questions[this.currentQuestionIndex];
-        const isCorrect = this.validateAnswer(currentQuestion);
-        
-        if (isCorrect) {
-            this.correctAnswers++;
-        }
-        
-        this.totalAnswers++;
-        this.currentQuestionIndex++;
-        
-        if (this.currentQuestionIndex < this.questions.length) {
-            this.loadQuestion(this.currentQuestionIndex);
-        } else {
-            this.stopQuiz();
+        try {
+            if (this.currentQuestionIndex >= this.questions.length) {
+                this.updateStatus('Quiz completed!', 'success');
+                return;
+            }
+            
+            // Check if answer was correct
+            const currentQuestion = this.questions[this.currentQuestionIndex];
+            const isCorrect = this.validateAnswer(currentQuestion);
+            
+            if (isCorrect) {
+                this.correctAnswers++;
+            }
+            
+            this.totalAnswers++;
+            this.currentQuestionIndex++;
+            
+            if (this.currentQuestionIndex < this.questions.length) {
+                this.loadQuestion(this.currentQuestionIndex);
+            } else {
+                this.stopQuiz();
+            }
+        } catch (err) {
+            console.error('Error in nextQuestion:', err);
         }
     }
     
@@ -170,71 +265,167 @@ class QuizManager {
     }
     
     startFrameCapture() {
+        console.log('Frame capture started');
+        let logCounter = 0;
+        
         const captureLoop = () => {
-            if (!this.isQuizActive) return;
-            
-            if (this.frameCount < this.maxFrames) {
-                this.captureFrameToServer();
-                this.frameCount++;
+            try {
+                if (!this.isQuizActive) {
+                    console.log('Quiz not active, stopping capture loop');
+                    return;
+                }
+                
+                if (this.frameCount < this.maxFrames) {
+                    logCounter++;
+                    if (logCounter % 10 === 0) {
+                        console.log(`Capturing frame ${this.frameCount}...`);
+                        // Log memory usage if available
+                        if (performance.memory) {
+                            const memoryMB = (performance.memory.usedJSHeapSize / 1048576).toFixed(2);
+                            console.log(`Memory: ${memoryMB}MB (limit: ~128MB)`);
+                        }
+                    }
+                    
+                    this.captureFrameToServer();
+                    this.frameCount++;
+                }
+                
+                setTimeout(captureLoop, 33); // ~30fps
+            } catch (err) {
+                console.error('Frame capture loop error:', err, err.stack);
+                // Continue capture even if there's an error
+                if (this.isQuizActive) {
+                    setTimeout(captureLoop, 33);
+                }
             }
-            
-            setTimeout(captureLoop, 33); // ~30fps
         };
         
+        console.log('Starting capture loop');
         captureLoop();
     }
     
     captureFrameToServer() {
-        if (!this.videoElement.srcObject) return;
-        
-        this.canvas.width = this.videoElement.videoWidth;
-        this.canvas.height = this.videoElement.videoHeight;
-        this.canvasContext.drawImage(this.videoElement, 0, 0);
-        
-        this.canvas.toBlob((blob) => {
-            this.sendFrameToServer(blob);
-        }, 'image/jpeg', 0.8);
+        try {
+            if (!this.videoElement.srcObject) {
+                console.warn('No video source object');
+                return;
+            }
+            
+            this.canvas.width = this.videoElement.videoWidth;
+            this.canvas.height = this.videoElement.videoHeight;
+            
+            if (this.canvas.width === 0 || this.canvas.height === 0) {
+                // Video stream not ready yet
+                return;
+            }
+            
+            this.canvasContext.drawImage(this.videoElement, 0, 0);
+            
+            this.canvas.toBlob((blob) => {
+                try {
+                    if (!blob) {
+                        console.warn('Blob is null');
+                        return;
+                    }
+                    
+                    if (blob.size === 0) {
+                        console.warn('Blob is empty');
+                        return;
+                    }
+                    
+                    if (this.isQuizActive) {
+                        this.sendFrameToServer(blob).catch(err => {
+                            console.error('Unhandled error in sendFrameToServer:', err);
+                        });
+                    }
+                } catch (err) {
+                    console.error('Error in toBlob callback:', err);
+                }
+            }, 'image/jpeg', 0.6); // Reduced quality from 0.8 to 0.6 to reduce blob size
+            
+            // Clear canvas to prevent memory buildup
+            this.canvasContext.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        } catch (err) {
+            console.error('Error in captureFrameToServer:', err, err.stack);
+        }
     }
     
     async sendFrameToServer(blob) {
+        if (!blob || blob.size === 0) {
+            console.warn('Invalid blob:', blob ? `size ${blob.size}` : 'null');
+            return;
+        }
+        
+        // Throttle requests if too many are pending
+        if (this.pendingFrameUploads >= this.maxPendingFrames) {
+            console.warn(`Too many pending frames (${this.pendingFrameUploads}), skipping upload`);
+            return;
+        }
+        
+        this.pendingFrameUploads++;
+        
         try {
             const formData = new FormData();
-            formData.append('frame', blob);
+            formData.append('frame', blob, 'frame.jpg');
             
-            fetch('http://localhost:5000/send-frame', {
+            const response = await fetch('http://localhost:5000/send-frame', {
                 method: 'POST',
                 body: formData
-            }).catch(err => {
-                // Silently fallback to local storage
-                this.storeFrameLocally(blob);
             });
+            
+            if (!response.ok) {
+                console.warn('Frame upload returned status:', response.status);
+                this.storeFrameLocally(blob);
+            }
         } catch (err) {
+            console.error('Fetch error (server may not be running):', err.message);
+            // Silently fallback to local storage without throwing
             this.storeFrameLocally(blob);
+        } finally {
+            this.pendingFrameUploads--;
+            // Force garbage collection hint for blob
+            blob = null;
         }
     }
     
     storeFrameLocally(blob) {
-        if ('indexedDB' in window) {
-            const request = indexedDB.open('QuizFrameDB', 1);
-            
-            request.onupgradeneeded = () => {
-                const db = request.result;
-                if (!db.objectStoreNames.contains('frames')) {
-                    db.createObjectStore('frames', { autoIncrement: true });
-                }
-            };
-            
-            request.onsuccess = () => {
-                const db = request.result;
-                const transaction = db.transaction(['frames'], 'readwrite');
-                const store = transaction.objectStore('frames');
-                store.add({
-                    frame: blob,
-                    frameNumber: this.frameCount,
-                    questionIndex: this.currentQuestionIndex,
-                    timestamp: new Date().toISOString()
-                });
-            };
+        try {
+            if ('indexedDB' in window) {
+                const request = indexedDB.open('QuizFrameDB', 1);
+                
+                request.onupgradeneeded = () => {
+                    try {
+                        const db = request.result;
+                        if (!db.objectStoreNames.contains('frames')) {
+                            db.createObjectStore('frames', { autoIncrement: true });
+                        }
+                    } catch (err) {
+                        console.error('Error in indexedDB onupgradeneeded:', err);
+                    }
+                };
+                
+                request.onsuccess = () => {
+                    try {
+                        const db = request.result;
+                        const transaction = db.transaction(['frames'], 'readwrite');
+                        const store = transaction.objectStore('frames');
+                        store.add({
+                            frame: blob,
+                            frameNumber: this.frameCount,
+                            questionIndex: this.currentQuestionIndex,
+                            timestamp: new Date().toISOString()
+                        });
+                    } catch (err) {
+                        console.error('Error in indexedDB onsuccess:', err);
+                    }
+                };
+                
+                request.onerror = () => {
+                    console.error('IndexedDB error:', request.error);
+                };
+            }
+        } catch (err) {
+            console.error('Error storing frame locally:', err);
         }
     }
     
@@ -259,8 +450,12 @@ class QuizManager {
     }
     
     updateStatus(message, className = '') {
-        this.status.textContent = message;
-        this.status.className = 'status info';
+        try {
+            this.status.textContent = message;
+            this.status.className = 'status info';
+        } catch (err) {
+            console.error('Error updating status:', err);
+        }
     }
 }
 
